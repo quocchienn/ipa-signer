@@ -11,11 +11,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ===== STORAGE =====
+// ===== FIX STORAGE RENDER =====
 const DATA_DIR = process.env.RENDER_DISK_PATH || '/tmp';
 const APPS_DIR = path.join(DATA_DIR, 'apps');
-
-console.log(`📁 Storage: ${APPS_DIR}`);
 
 if (!fs.existsSync(APPS_DIR)) {
   fs.mkdirSync(APPS_DIR, { recursive: true });
@@ -25,6 +23,16 @@ app.use(express.static('public'));
 app.use('/apps', express.static(APPS_DIR));
 
 const upload = multer({ dest: '/tmp' });
+
+// ===== FIX ZSIGN PERMISSION =====
+const zsignPath = path.join(__dirname, 'zsign');
+
+try {
+  execSync(`chmod +x "${zsignPath}"`);
+  console.log("✅ zsign permission OK");
+} catch (e) {
+  console.log("❌ chmod zsign lỗi:", e.message);
+}
 
 // ===== DATABASE =====
 let apps = [];
@@ -38,17 +46,7 @@ function saveApps() {
   fs.writeFileSync(APPS_JSON, JSON.stringify(apps, null, 2));
 }
 
-// ===== FIX ZSIGN PERMISSION =====
-const zsignPath = path.join(__dirname, 'zsign');
-
-try {
-  execSync(`chmod +x "${zsignPath}"`);
-  console.log("✅ zsign ready");
-} catch (e) {
-  console.log("❌ chmod zsign lỗi:", e.message);
-}
-
-// ===== SIGN API =====
+// ===== SIGN IPA =====
 app.post('/sign', upload.fields([
   { name: 'ipa', maxCount: 1 },
   { name: 'p12', maxCount: 1 },
@@ -57,45 +55,39 @@ app.post('/sign', upload.fields([
   try {
     let { p12Password, bundleId, title } = req.body;
 
-    if (!req.files?.ipa || !req.files?.p12 || !req.files?.mobileprovision) {
+    const ipaFile = req.files.ipa?.[0];
+    const p12File = req.files.p12?.[0];
+    const provFile = req.files.mobileprovision?.[0];
+
+    if (!ipaFile || !p12File || !provFile) {
       return res.json({ success: false, error: "Thiếu file upload" });
     }
 
-    const ipaFile = req.files.ipa[0];
-    const p12File = req.files.p12[0];
-    const provFile = req.files.mobileprovision[0];
-
-    // ===== AUTO PARSE IPA =====
-    let extractedBundleId = bundleId;
-    let extractedTitle = title || 'My App';
-
+    // ===== AUTO GET INFO FROM IPA =====
     try {
       const AdmZip = (await import('adm-zip')).default;
       const zip = new AdmZip(ipaFile.path);
-      const plist = zip.getEntries().find(e =>
+
+      const entry = zip.getEntries().find(e =>
         e.entryName.includes('Payload/') && e.entryName.endsWith('Info.plist')
       );
 
-      if (plist) {
-        const content = plist.getData().toString('utf8');
+      if (entry) {
+        const content = entry.getData().toString('utf8');
 
         const bundleMatch = content.match(/CFBundleIdentifier<\/key>[\s\S]*?<string>(.*?)<\/string>/);
-        if (bundleMatch) extractedBundleId = bundleMatch[1];
+        const nameMatch = content.match(/CFBundleDisplayName<\/key>[\s\S]*?<string>(.*?)<\/string>/);
 
-        const nameMatch =
-          content.match(/CFBundleDisplayName<\/key>[\s\S]*?<string>(.*?)<\/string>/) ||
-          content.match(/CFBundleName<\/key>[\s\S]*?<string>(.*?)<\/string>/);
-
-        if (nameMatch) extractedTitle = nameMatch[1];
+        if (bundleMatch) bundleId = bundleMatch[1];
+        if (nameMatch) title = nameMatch[1];
       }
     } catch (e) {
-      console.log("⚠ Không parse IPA:", e.message);
+      console.log("Parse IPA lỗi:", e.message);
     }
 
-    bundleId = extractedBundleId || bundleId || 'com.example.app';
-    title = extractedTitle;
+    bundleId = bundleId || 'com.example.app';
+    title = title || 'My App';
 
-    // ===== CREATE APP DIR =====
     const id = Date.now().toString(36);
     const appDir = path.join(APPS_DIR, id);
     fs.mkdirSync(appDir, { recursive: true });
@@ -109,7 +101,6 @@ app.post('/sign', upload.fields([
     fs.copyFileSync(p12File.path, cert);
     fs.copyFileSync(provFile.path, prov);
 
-    // ===== SIGN COMMAND =====
     const cmd = `"${zsignPath}" -v -i "${originalIpa}" -c "${cert}" -p "${p12Password}" -m "${prov}" -o "${signedIpa}" -b "${bundleId}"`;
 
     exec(cmd, async (error, stdout, stderr) => {
@@ -118,17 +109,18 @@ app.post('/sign', upload.fields([
       console.log("STDERR:", stderr);
 
       if (error) {
-        return res.json({ success: false, error: stderr || error.message });
+        return res.json({
+          success: false,
+          error: stderr || error.message
+        });
       }
 
-      // ===== CREATE MANIFEST =====
       const domain = process.env.RENDER_EXTERNAL_HOSTNAME
         ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}`
         : `http://localhost:${PORT}`;
 
-      const manifest = `${appDir}/manifest.plist`;
-
-      fs.writeFileSync(manifest, `<?xml version="1.0"?>
+      // ===== MANIFEST =====
+      const manifest = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
 <key>items</key>
@@ -151,30 +143,31 @@ app.post('/sign', upload.fields([
 </dict>
 </array>
 </dict>
-</plist>`);
+</plist>`;
+
+      fs.writeFileSync(path.join(appDir, 'manifest.plist'), manifest);
 
       const installLink = `itms-services://?action=download-manifest&url=${domain}/apps/${id}/manifest.plist`;
 
-      const appData = {
+      const qr = await QRCode.toDataURL(installLink);
+
+      apps.push({
         id,
         title,
         bundleId,
-        installLink,
+        password: p12Password, // 🔥 FIX AUTO RESIGN
         downloads: 0,
-        password: p12Password, // 🔥 fix auto resign
-        createdAt: Date.now(),
-        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
-        qr: await QRCode.toDataURL(installLink)
-      };
+        installLink,
+        qr,
+        createdAt: Date.now()
+      });
 
-      apps.push(appData);
       saveApps();
 
       res.json({
         success: true,
         installLink,
-        qr: appData.qr,
-        id,
+        qr,
         title
       });
     });
@@ -186,9 +179,9 @@ app.post('/sign', upload.fields([
 
 // ===== DOWNLOAD TRACK =====
 app.get('/track/:id', (req, res) => {
-  const a = apps.find(x => x.id === req.params.id);
-  if (a) {
-    a.downloads++;
+  const appItem = apps.find(a => a.id === req.params.id);
+  if (appItem) {
+    appItem.downloads++;
     saveApps();
   }
   res.sendStatus(200);
@@ -197,22 +190,29 @@ app.get('/track/:id', (req, res) => {
 // ===== STATS =====
 app.get('/api/apps', (req, res) => res.json(apps));
 
-// ===== AUTO RESIGN =====
+app.get('/api/stats', (req, res) => {
+  res.json({
+    totalApps: apps.length,
+    totalDownloads: apps.reduce((s, a) => s + a.downloads, 0)
+  });
+});
+
+// ===== AUTO RESIGN (FIXED) =====
 cron.schedule('0 0 */7 * *', () => {
-  console.log("🔄 Auto resign...");
+  console.log("🔄 Auto resign chạy...");
 
   apps.forEach(appItem => {
-    const dir = path.join(APPS_DIR, appItem.id);
+    const appDir = path.join(APPS_DIR, appItem.id);
 
-    const cmd = `"${zsignPath}" -i "${dir}/original.ipa" -c "${dir}/cert.p12" -p "${appItem.password}" -m "${dir}/profile.mobileprovision" -o "${dir}/signed.ipa"`;
+    const cmd = `"${zsignPath}" -i "${appDir}/original.ipa" -c "${appDir}/cert.p12" -p "${appItem.password}" -m "${appDir}/profile.mobileprovision" -o "${appDir}/signed.ipa"`;
 
     exec(cmd, (err) => {
-      if (err) console.log("❌ resign lỗi:", appItem.id);
-      else console.log("✅ resign:", appItem.id);
+      if (err) console.log("❌ Resign lỗi:", appItem.id);
+      else console.log("✅ Resign OK:", appItem.id);
     });
   });
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server chạy port ${PORT}`);
+  console.log("🚀 Server running:", PORT);
 });
