@@ -39,23 +39,62 @@ function saveApps() {
   fs.writeFileSync(APPS_JSON, JSON.stringify(apps, null, 2));
 }
 
-// Endpoint ký IPA
+// Endpoint ký IPA + tự động lấy Bundle ID & Title từ IPA
 app.post('/sign', upload.fields([
   { name: 'ipa', maxCount: 1 },
   { name: 'p12', maxCount: 1 },
   { name: 'mobileprovision', maxCount: 1 }
 ]), async (req, res) => {
   try {
-    const { p12Password, bundleId, title = 'My Signed App' } = req.body;
+    let { p12Password, bundleId, title } = req.body;
     const ipaFile = req.files.ipa[0];
     const p12File = req.files.p12[0];
     const provFile = req.files.mobileprovision[0];
 
+    // === TỰ ĐỘNG LẤY BUNDLE ID VÀ TÊN APP TỪ IPA ===
+    let extractedBundleId = bundleId;
+    let extractedTitle = title || 'My App';
+
+    try {
+      const AdmZip = (await import('adm-zip')).default;
+      const zip = new AdmZip(ipaFile.path);
+      const zipEntries = zip.getEntries();
+
+      // Tìm Info.plist trong Payload/*.app/Info.plist
+      const plistEntry = zipEntries.find(entry => 
+        entry.entryName.includes('Payload/') && 
+        entry.entryName.endsWith('Info.plist')
+      );
+
+      if (plistEntry) {
+        const plistContent = plistEntry.getData().toString('utf8');
+        
+        // Parse đơn giản CFBundleIdentifier
+        const bundleMatch = plistContent.match(/<key>CFBundleIdentifier<\/key>[\s\S]*?<string>(.*?)<\/string>/);
+        if (bundleMatch && bundleMatch[1]) {
+          extractedBundleId = bundleMatch[1].trim();
+        }
+
+        // Parse CFBundleDisplayName hoặc CFBundleName
+        const nameMatch = plistContent.match(/<key>CFBundleDisplayName<\/key>[\s\S]*?<string>(.*?)<\/string>/) ||
+                         plistContent.match(/<key>CFBundleName<\/key>[\s\S]*?<string>(.*?)<\/string>/);
+        if (nameMatch && nameMatch[1]) {
+          extractedTitle = nameMatch[1].trim();
+        }
+      }
+    } catch (parseErr) {
+      console.log('Không tự động lấy được thông tin từ IPA, dùng giá trị người dùng nhập:', parseErr.message);
+    }
+
+    // Sử dụng giá trị tự động nếu người dùng chưa nhập
+    bundleId = extractedBundleId || bundleId || 'com.example.app';
+    title = extractedTitle;
+
+    // Tiếp tục ký như cũ...
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
     const appDir = path.join(APPS_DIR, id);
     fs.mkdirSync(appDir, { recursive: true });
 
-    // Copy files để resign sau
     const originalIpa = path.join(appDir, 'original.ipa');
     fs.copyFileSync(ipaFile.path, originalIpa);
     fs.copyFileSync(p12File.path, path.join(appDir, 'cert.p12'));
@@ -64,16 +103,17 @@ app.post('/sign', upload.fields([
     const signedIpaPath = path.join(appDir, 'signed.ipa');
     const zsignPath = path.join(__dirname, 'zsign');
 
-    const signCmd = `"${zsignPath}" -i "${originalIpa}" -c "${path.join(appDir, 'cert.p12')}" -p "${p12Password}" -m "${path.join(appDir, 'profile.mobileprovision')}" -o "${signedIpaPath}" -b "${bundleId || 'com.example.app'}"`;
+    const signCmd = `"${zsignPath}" -i "${originalIpa}" -c "${path.join(appDir, 'cert.p12')}" -p "${p12Password}" -m "${path.join(appDir, 'profile.mobileprovision')}" -o "${signedIpaPath}" -b "${bundleId}"`;
 
-    exec(signCmd, async (error, stdout, stderr) => {
+    exec(signCmd, async (error) => {
       if (error) {
-        console.error(stderr);
         return res.status(500).json({ success: false, error: 'Ký IPA thất bại. Kiểm tra password hoặc file.' });
       }
 
-      // Tạo manifest.plist
-      const domain = process.env.RENDER_EXTERNAL_HOSTNAME ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://localhost:${PORT}`;
+      const domain = process.env.RENDER_EXTERNAL_HOSTNAME 
+        ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` 
+        : `http://localhost:${PORT}`;
+
       const manifestContent = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -117,8 +157,16 @@ app.post('/sign', upload.fields([
       apps.push(appData);
       saveApps();
 
-      res.json({ success: true, installLink, qr: appData.qr, id, title });
+      res.json({ 
+        success: true, 
+        installLink, 
+        qr: appData.qr, 
+        id, 
+        title,
+        bundleId 
+      });
     });
+
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
