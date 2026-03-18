@@ -105,10 +105,17 @@ app.post('/sign', upload.fields([
 
     const signCmd = `"${zsignPath}" -i "${originalIpa}" -c "${path.join(appDir, 'cert.p12')}" -p "${p12Password}" -m "${path.join(appDir, 'profile.mobileprovision')}" -o "${signedIpaPath}" -b "${bundleId}"`;
 
-    exec(signCmd, async (error) => {
-      if (error) {
-        return res.status(500).json({ success: false, error: 'Ký IPA thất bại. Kiểm tra password hoặc file.' });
-      }
+exec(signCmd, async (error, stdout, stderr) => {
+  console.log("CMD:", signCmd);
+  console.log("STDOUT:", stdout);
+  console.log("STDERR:", stderr);
+
+  if (error) {
+    return res.status(500).json({ 
+      success: false, 
+      error: stderr || error.message 
+    });
+  }
 
       const domain = process.env.RENDER_EXTERNAL_HOSTNAME 
         ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` 
