@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IPA Signer • iOS Style</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro", sans-serif; background: #0a0a0a; }
+    .glass { background: rgba(255,255,255,0.06); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.1); }
+    .card { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+    .card:hover { transform: translateY(-4px); }
+  </style>
+</head>
+<body class="text-white min-h-screen pb-20">
+  <div class="max-w-md mx-auto">
+    <!-- iOS-like Header -->
+    <div class="sticky top-0 glass z-50 px-6 py-5 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <i class="fa-solid fa-mobile-screen-button text-3xl text-blue-500"></i>
+        <h1 class="text-2xl font-semibold tracking-tighter">IPA Signer</h1>
+      </div>
+      <div onclick="loadApps()" class="text-blue-400 cursor-pointer">
+        <i class="fa-solid fa-rotate"></i>
+      </div>
+    </div>
+
+    <div class="p-6 space-y-8">
+      <!-- Form ký -->
+      <div class="glass rounded-3xl p-6">
+        <h2 class="text-xl font-semibold mb-6 flex items-center gap-2">
+          <i class="fa-solid fa-file-signature"></i> Ký IPA mới
+        </h2>
+        <form id="signForm" enctype="multipart/form-data" class="space-y-5">
+          <div>
+            <label class="block text-sm text-zinc-400 mb-1">File .ipa</label>
+            <input type="file" name="ipa" accept=".ipa" required class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
+          </div>
+          <div>
+            <label class="block text-sm text-zinc-400 mb-1">File .mobileprovision</label>
+            <input type="file" name="mobileprovision" accept=".mobileprovision" required class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
+          </div>
+          <div>
+            <label class="block text-sm text-zinc-400 mb-1">File .p12</label>
+            <input type="file" name="p12" accept=".p12" required class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4 text-sm">
+          </div>
+          <div>
+            <label class="block text-sm text-zinc-400 mb-1">Mật khẩu .p12</label>
+            <input type="password" name="p12Password" placeholder="••••••••" required class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4">
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm text-zinc-400 mb-1">Bundle ID</label>
+              <input type="text" name="bundleId" value="com.yourcompany.app" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4">
+            </div>
+            <div>
+              <label class="block text-sm text-zinc-400 mb-1">Tên App</label>
+              <input type="text" name="title" value="My App" class="w-full bg-zinc-900 border border-zinc-700 rounded-2xl px-5 py-4">
+            </div>
+          </div>
+          <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 py-4 rounded-3xl text-lg font-semibold transition-all active:scale-95">
+            Ký & Tạo Link Cài Đặt
+          </button>
+        </form>
+      </div>
+
+      <!-- Thống kê tổng -->
+      <div id="stats" class="glass rounded-3xl p-6 flex justify-around text-center">
+        <div>
+          <div id="totalApps" class="text-3xl font-bold text-blue-400">0</div>
+          <div class="text-xs text-zinc-500">Apps</div>
+        </div>
+        <div>
+          <div id="totalDownloads" class="text-3xl font-bold text-green-400">0</div>
+          <div class="text-xs text-zinc-500">Downloads</div>
+        </div>
+      </div>
+
+      <!-- Danh sách apps -->
+      <div>
+        <h2 class="font-semibold text-lg mb-4 flex items-center gap-2">
+          <i class="fa-solid fa-list"></i> Các App Đã Ký
+        </h2>
+        <div id="appList" class="space-y-4"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('signForm');
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const res = await fetch('/sign', { method: 'POST', body: fd });
+      const data = await res.json();
+
+      if (data.success) {
+        alert('✅ Ký thành công! Link đã sẵn sàng.');
+        loadApps();
+        form.reset();
+      } else {
+        alert('❌ Lỗi: ' + (data.error || 'Không xác định'));
+      }
+    });
+
+    async function loadApps() {
+      const res = await fetch('/api/apps');
+      const apps = await res.json();
+      const container = document.getElementById('appList');
+      container.innerHTML = '';
+
+      apps.forEach(app => {
+        const div = document.createElement('div');
+        div.className = 'glass rounded-3xl p-5 card';
+        div.innerHTML = `
+          <div class="flex justify-between items-start">
+            <div>
+              <div class="font-semibold">${app.title}</div>
+              <div class="text-xs text-zinc-500 mt-1">Tạo: ${new Date(app.createdAt).toLocaleDateString('vi-VN')}</div>
+            </div>
+            <div class="text-right">
+              <div class="text-green-400 text-sm">${app.downloads} lượt tải</div>
+            </div>
+          </div>
+          <div class="mt-4 flex gap-3">
+            <a href="${app.installLink}" target="_blank" 
+               class="flex-1 bg-green-600 hover:bg-green-500 py-3 rounded-2xl text-center font-medium text-sm transition">
+              Cài Trực Tiếp
+            </a>
+            <button onclick="showQR('${app.qr}', '${app.title}')" 
+                    class="flex-1 bg-zinc-700 hover:bg-zinc-600 py-3 rounded-2xl text-center font-medium text-sm transition">
+              QR Code
+            </button>
+          </div>
+        `;
+        container.appendChild(div);
+      });
+
+      // Update stats
+      const statsRes = await fetch('/api/stats');
+      const stats = await statsRes.json();
+      document.getElementById('totalApps').textContent = stats.totalApps;
+      document.getElementById('totalDownloads').textContent = stats.totalDownloads;
+    }
+
+    function showQR(qrDataUrl, title) {
+      const win = window.open('', '_blank');
+      win.document.write(`
+        <html><head><title>QR - ${title}</title>
+        <style>body{margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#111;flex-direction:column;color:white;font-family:sans-serif;}</style>
+        </head><body>
+          <h2>${title}</h2>
+          <img src="${qrDataUrl}" style="max-width:90%;border-radius:20px;">
+          <p class="mt-6 text-sm opacity-70">Quét để cài app trên iPhone</p>
+        </body></html>
+      `);
+    }
+
+    // Load khi mở trang
+    window.onload = loadApps;
+  </script>
+</body>
+</html>
