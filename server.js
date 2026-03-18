@@ -11,9 +11,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Render Disk mount path (bắt buộc phải tạo Disk với Mount Path = /data)
-const DATA_DIR = '/data';
+// === SỬA CHO TEST KHÔNG DISK ===
+const DATA_DIR = process.env.RENDER_DISK_PATH || '/tmp';
 const APPS_DIR = path.join(DATA_DIR, 'apps');
+
+console.log(`📁 Using storage directory: ${APPS_DIR}`);
 
 if (!fs.existsSync(APPS_DIR)) {
   fs.mkdirSync(APPS_DIR, { recursive: true });
@@ -22,7 +24,7 @@ if (!fs.existsSync(APPS_DIR)) {
 app.use(express.static('public'));
 app.use('/apps', express.static(APPS_DIR));
 
-const upload = multer({ dest: '/tmp' });
+const upload = multer({ dest: '/tmp' });)
 
 // Lưu apps (dùng array trong memory + backup JSON trên disk)
 let apps = [];
