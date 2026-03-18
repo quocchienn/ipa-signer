@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: ipa-signer
+    env: node
+    buildCommand: |
+      apt-get update
+      apt-get install -y libminizip1
+      npm install
+    startCommand: node server.js
