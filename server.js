@@ -24,7 +24,7 @@ if (!fs.existsSync(APPS_DIR)) {
 app.use(express.static('public'));
 app.use('/apps', express.static(APPS_DIR));
 
-const upload = multer({ dest: '/tmp' });)
+const upload = multer({ dest: '/tmp' });
 
 // Lưu apps (dùng array trong memory + backup JSON trên disk)
 let apps = [];
